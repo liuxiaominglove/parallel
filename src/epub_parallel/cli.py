@@ -32,12 +32,11 @@ def build_parser():
     p.add_argument("--model", help="模型名（默认 deepseek-v4-flash）")
     p.add_argument("--base-url", help="API base URL（默认 https://api.deepseek.com）")
     p.add_argument("--api-key", help="API key（默认读环境变量 DEEPSEEK_API_KEY）")
-    p.add_argument("--batch-size", type=int, help="每批翻译块数（默认 20）")
+    p.add_argument("--batch-size", type=int, help=f"每批翻译块数（默认 {Config.batch_size}）")
     p.add_argument("--checkpoint", help="断点文件路径（默认 <原名>.checkpoint.json）")
     p.add_argument("--max-cost", type=float, help="单次运行预算上限（美元），超过则停止")
     p.add_argument("--input-price", type=float, help="每百万输入 token 单价（默认 0.14 美元）")
     p.add_argument("--output-price", type=float, help="每百万输出 token 单价（默认 0.28 美元）")
-    p.add_argument("--yes", action="store_true", help="预估超限时仍继续")
     p.add_argument("--thinking", action="store_true", help="启用推理模式（默认关闭，省 token）")
     p.add_argument("--config", help="配置文件路径（默认 ~/.config/epub-parallel/config.json）")
     p.add_argument(
@@ -51,7 +50,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     skip_types = (
         tuple(t.strip() for t in args.skip_types.split(",") if t.strip())
-        if args.skip_types
+        if args.skip_types is not None
         else None
     )
     try:
@@ -110,17 +109,19 @@ def main(argv=None):
 
     output_path = args.output or default_output_path(args.input)
 
+    if Path(output_path).resolve() == Path(args.input).resolve():
+        print(f"错误: 输出路径与输入文件相同: {output_path}", file=sys.stderr)
+        return 1
+
     if total == 0:
         print("没有可翻译的内容。", file=sys.stderr)
         return 1
 
-    if config.max_cost is not None and est_cost > config.max_cost and not args.yes:
+    if config.max_cost is not None and est_cost > config.max_cost:
         print(
-            f"预估成本 ${est_cost:.6f} 超过上限 ${config.max_cost:.6f}，已中止。"
-            f"加 --yes 继续，或调大 --max-cost。",
-            file=sys.stderr,
+            f"预估成本 ${est_cost:.6f} 超过上限 ${config.max_cost:.6f}，"
+            f"运行时将按真实成本中止。"
         )
-        return 1
 
     try:
         translator = translate.Translator(
@@ -134,7 +135,10 @@ def main(argv=None):
         )
 
         def _progress(done, total, cost):
-            print(f"\r进度: [{done}/{total}] 已花 ${cost:.6f}", end="", flush=True)
+            if sys.stdout.isatty():
+                print(f"\r进度: [{done}/{total}] 已花 ${cost:.6f}", end="", flush=True)
+            elif done % 50 == 0 or done == total:
+                print(f"进度: [{done}/{total}] 已花 ${cost:.6f}")
 
         new_count, reason = pipeline.translate_all(
             epub, checkpoint, translator, config,
@@ -154,6 +158,11 @@ def main(argv=None):
         f"成本对比: 预估 ~${est_cost:.6f} / 实际 ~${translator.cost(config.input_price, config.output_price):.6f}"
     )
     print(f"已写出: {output_path}")
+    warnings = getattr(translator, "warnings", None)
+    if warnings:
+        print(f"质检告警 {len(warnings)} 条：")
+        for w in warnings:
+            print(f"  - {w}")
     if reason == "max_cost":
         print("已达单次预算上限，已写出已译部分。续跑：调大 --max-cost 或去掉后重跑同一命令。")
     elif reason == "max_blocks":

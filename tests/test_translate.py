@@ -119,6 +119,20 @@ def test_network_error_retries(monkeypatch, translator):
     assert translator.translate_batch(["ok"]) == ["好"]
 
 
+def test_non_retryable_http_fails_fast(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0, max_retries=5)
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return FakeResponse(401, text="unauthorized")
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    with pytest.raises(TranslateError):
+        t.translate_batch(["hello", "world"])
+    assert calls["n"] == 1  # 4xx 不重试，直接失败
+
+
 def test_cost_accumulates_real_usage(monkeypatch, translator):
     monkeypatch.setattr(
         translate.requests, "post",
@@ -229,3 +243,71 @@ def test_single_segment_failure_raises_directly(monkeypatch):
     monkeypatch.setattr(translate.requests, "post", fake_post)
     with pytest.raises(TranslateError):
         t.translate_batch(["a"])
+
+
+def test_untranslated_segment_retried_single(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0)
+    calls = {"single": 0}
+
+    def fake_post(url, **kw):
+        body = json.loads(kw["json"]["messages"][1]["content"])
+        if len(body) > 1:
+            return _ok_response(["译文一", body[1]])  # 第二条 == 原文
+        calls["single"] += 1
+        return _ok_response([f"译:{body[0]}"])  # 单段正确
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    result = t.translate_batch(["one", "two"])
+    assert result == ["译文一", "译:two"]
+    assert calls["single"] == 1  # 第二条触发单段重翻
+    assert t.warnings == []
+
+
+def test_untranslated_retry_still_same_warns(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0)
+
+    def fake_post(url, **kw):
+        body = json.loads(kw["json"]["messages"][1]["content"])
+        return _ok_response(body)  # 单段也返回原文（重翻失败）
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    result = t.translate_batch(["one"])
+    assert result == ["one"]  # 保留原文
+    assert any("译文与原文相同" in w for w in t.warnings)
+
+
+def test_abnormal_length_warns_but_keeps(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0)
+
+    def fake_post(url, **kw):
+        return _ok_response(["好"])
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    result = t.translate_batch(["A very long sentence with many words to translate faithfully."])
+    assert result == ["好"]
+    assert any("长度异常" in w for w in t.warnings)
+
+
+def test_normal_translation_no_warnings(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0)
+    monkeypatch.setattr(translate.requests, "post", lambda url, **kw: _ok_response(["你好", "世界"]))
+    assert t.translate_batch(["hello", "world"]) == ["你好", "世界"]
+    assert t.warnings == []
+
+
+def test_fallback_path_enforces_quality(monkeypatch):
+    t = Translator(api_key="k", backoff_base=0.0, max_retries=2)
+
+    def fake_post(url, **kw):
+        body = json.loads(kw["json"]["messages"][1]["content"])
+        if len(body) > 1:
+            return _ok_response(["只有一个"])  # 整批条数不匹配，触发降级
+        if body[0] == "lazy":
+            return _ok_response(["lazy"])  # 单段偷懒返回原文
+        return _ok_response([f"译:{body[0]}"])
+
+    monkeypatch.setattr(translate.requests, "post", fake_post)
+    result = t.translate_batch(["lazy", "good"])
+    assert result[0] == "lazy"  # 重翻仍相同，保留原文
+    assert result[1] == "译:good"
+    assert any("译文与原文相同" in w for w in t.warnings)

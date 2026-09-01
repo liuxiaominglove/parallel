@@ -81,13 +81,21 @@ class Epub:
     def _find_opf_path(container_bytes):
         try:
             root = ET.fromstring(container_bytes)
-            rootfile = root.find(f".//{{{CONTAINER_NS}}}rootfile")
-            return rootfile.get("full-path")
         except ET.ParseError as e:
             raise EpubError("META-INF/container.xml 解析失败") from e
+        rootfile = root.find(f".//{{{CONTAINER_NS}}}rootfile")
+        if rootfile is None:
+            raise EpubError("META-INF/container.xml 缺少 rootfile 元素")
+        full_path = rootfile.get("full-path")
+        if not full_path:
+            raise EpubError("META-INF/container.xml 的 rootfile 缺少 full-path 属性")
+        return full_path
 
     def _parse_opf(self, opf_bytes):
-        root = ET.fromstring(opf_bytes)
+        try:
+            root = ET.fromstring(opf_bytes)
+        except ET.ParseError as e:
+            raise EpubError("OPF 解析失败") from e
         manifest = {}
         for item in root.findall(f".//{{{OPF_NS}}}item"):
             item_id = item.get("id")
@@ -125,10 +133,15 @@ class Epub:
         return self._doc_types[href]
 
     def write(self, output_path, modified):
-        """把输入 zip 整体复制到输出，替换 modified 中的文档字节。"""
+        """把输入 zip 整体复制到输出，替换 modified 中的文档字节。
+
+        先写临时文件再原子替换，避免 output_path 与 self.path 相同时
+        'w' 模式先截断仍在读取的源文件导致损坏。
+        """
         modified = {posixpath.normpath(k): v for k, v in modified.items()}
+        tmp_path = os.fspath(output_path) + ".tmp"
         with zipfile.ZipFile(self.path) as zin, zipfile.ZipFile(
-            output_path, "w", zipfile.ZIP_DEFLATED
+            tmp_path, "w", zipfile.ZIP_DEFLATED
         ) as zout:
             names = zin.namelist()
             if "mimetype" in names:
@@ -144,3 +157,4 @@ class Epub:
                     zout.writestr(name, modified[name])
                 else:
                     zout.writestr(name, zin.read(name))
+        os.replace(tmp_path, output_path)

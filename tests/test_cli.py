@@ -102,7 +102,7 @@ def test_dry_run_prints_estimate(epub_path, monkeypatch, capsys):
     assert "预估剩余成本" in out
 
 
-def test_max_cost_gate_aborts_without_yes(epub_path, monkeypatch, capsys):
+def test_max_cost_soft_hint_continues(epub_path, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     called = {"n": 0}
 
@@ -111,20 +111,11 @@ def test_max_cost_gate_aborts_without_yes(epub_path, monkeypatch, capsys):
         return FakeTranslator()
 
     monkeypatch.setattr(cli.translate, "Translator", boom)
-    # 剩余 8 块，估成本必大于 $0.000001，超限应中止
-    rc = cli.main([str(epub_path), "--max-cost", "0.000001"])
-    assert rc == 1
-    assert called["n"] == 0  # 未创建 translator，未调 API
-    assert "超过上限" in capsys.readouterr().err
-
-
-def test_max_cost_gate_passes_with_yes(epub_path, tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setattr(cli.translate, "Translator", lambda **kw: FakeTranslator())
     out_path = tmp_path / "out.epub"
-    rc = cli.main([str(epub_path), "-o", str(out_path), "--max-cost", "0.000001", "--yes"])
+    rc = cli.main([str(epub_path), "-o", str(out_path), "--max-cost", "0.000001"])
     assert rc == 0
-    assert out_path.exists()
+    assert called["n"] == 1  # 软提示，仍创建 translator 继续
+    assert "超过上限" in capsys.readouterr().out
 
 
 def test_prints_actual_cost(epub_path, tmp_path, monkeypatch, capsys):
@@ -136,7 +127,7 @@ def test_prints_actual_cost(epub_path, tmp_path, monkeypatch, capsys):
     assert "成本对比" in capsys.readouterr().out
 
 
-def test_config_file_max_cost_applies(epub_path, tmp_path, monkeypatch, capsys):
+def test_config_file_max_cost_soft_hint(epub_path, tmp_path, monkeypatch, capsys):
     import json
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
@@ -149,11 +140,12 @@ def test_config_file_max_cost_applies(epub_path, tmp_path, monkeypatch, capsys):
         return FakeTranslator()
 
     monkeypatch.setattr(cli.translate, "Translator", boom)
-    # 未传 --max-cost，但从配置文件读到极小上限 → 门槛中止
-    rc = cli.main([str(epub_path), "--config", str(cfg)])
-    assert rc == 1
-    assert called["n"] == 0
-    assert "超过上限" in capsys.readouterr().err
+    out_path = tmp_path / "out.epub"
+    # 未传 --max-cost，但从配置文件读到极小上限 → 软提示继续，运行时真实门禁兜底
+    rc = cli.main([str(epub_path), "-o", str(out_path), "--config", str(cfg)])
+    assert rc == 0
+    assert called["n"] == 1
+    assert "超过上限" in capsys.readouterr().out
 
 
 def test_corrupted_config_file_returns_error(epub_path, tmp_path, monkeypatch, capsys):
@@ -187,6 +179,29 @@ def test_skip_types_flag_overrides(typed_epub_path, monkeypatch, capsys):
     assert "跳过 1" in out
 
 
+def test_skip_types_empty_string_skips_nothing(typed_epub_path, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise AssertionError("no translator in dry-run")
+
+    monkeypatch.setattr(cli.translate, "Translator", boom)
+    rc = cli.main([str(typed_epub_path), "--dry-run", "--skip-types", ""])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "跳过 0" in out
+
+
+def test_output_same_as_input_rejected(epub_path, tmp_path, monkeypatch, capsys):
+    import shutil
+
+    target = tmp_path / "same.epub"
+    shutil.copyfile(str(epub_path), str(target))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(cli.translate, "Translator", lambda **kw: FakeTranslator())
+    rc = cli.main([str(target), "-o", str(target)])
+    assert rc == 1
+    assert "相同" in capsys.readouterr().err
+
+
 def test_progress_printed(epub_path, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setattr(cli.translate, "Translator", lambda **kw: FakeTranslator())
@@ -195,6 +210,18 @@ def test_progress_printed(epub_path, tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "进度" in out
+    assert "[8/8]" in out
+
+
+def test_progress_throttled_when_not_tty(epub_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(cli.translate, "Translator", lambda **kw: FakeTranslator())
+    out_path = tmp_path / "out.epub"
+    # 8 块分 4 批，非 TTY（capsys 下 isatty=False）只应在 done==total 时打一行
+    rc = cli.main([str(epub_path), "-o", str(out_path), "--batch-size", "2"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.count("进度") == 1
     assert "[8/8]" in out
 
 
@@ -227,3 +254,32 @@ def test_estimate_actual_comparison(epub_path, tmp_path, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "预估" in out and "实际" in out
+
+
+def test_warnings_printed(epub_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    class WarningTranslator:
+        def __init__(self, **kw):
+            self.warnings = ["译文与原文相同: foo"]
+
+        def translate_batch(self, texts):
+            return [f"〔{t}〕" for t in texts]
+
+        def cost(self, input_price, output_price):
+            return 0.0
+
+    monkeypatch.setattr(cli.translate, "Translator", lambda **kw: WarningTranslator())
+    out_path = tmp_path / "out.epub"
+    rc = cli.main([str(epub_path), "-o", str(out_path)])
+    assert rc == 0
+    assert "质检告警" in capsys.readouterr().out
+
+
+def test_no_warnings_not_printed(epub_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(cli.translate, "Translator", lambda **kw: FakeTranslator())
+    out_path = tmp_path / "out.epub"
+    rc = cli.main([str(epub_path), "-o", str(out_path)])
+    assert rc == 0
+    assert "质检告警" not in capsys.readouterr().out

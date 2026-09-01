@@ -3,7 +3,7 @@
 ## 项目说明
 
 把英文 EPUB 转成中英段落交错的双语 EPUB（每段英文后紧跟一段中文 `.cn-parallel`）。
-翻译引擎 DeepSeek（`deepseek-chat`），key 读环境变量 `DEEPSEEK_API_KEY`。
+翻译引擎 DeepSeek（`deepseek-v4-flash`），key 读环境变量 `DEEPSEEK_API_KEY`。
 
 ## 技术栈
 

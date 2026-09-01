@@ -59,6 +59,8 @@ def _coerce(name, value):
         if non_none:
             typ = non_none[0]
     if typ is bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in ("false", "no", "0", "off", "")
         return bool(value)
     if typ is int:
         return int(value)
@@ -87,5 +89,8 @@ def load_config_file(path):
     result = {}
     for k, v in data.items():
         if k in _CONFIG_FIELDS:
-            result[k] = _coerce(k, v)
+            try:
+                result[k] = _coerce(k, v)
+            except (ValueError, TypeError) as e:
+                raise ConfigError(f"配置字段 '{k}' 值无效: {p} ({e})") from e
     return result

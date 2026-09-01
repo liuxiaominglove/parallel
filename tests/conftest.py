@@ -109,3 +109,16 @@ _TYPED_DOCS = {
 def typed_epub_path(tmp_path):
     """8 个文档，各自带不同的文档级语义标记，顺序固定。"""
     return make_epub(tmp_path, list(_TYPED_DOCS.values()), "typed.epub")
+
+
+# 无 epub:type 标记的前置页，靠内容启发式跳过
+_FRONT_MATTER_DOCS = [
+    "<h1>Chapter One</h1><p>Body text about dopamine and how it works.</p>",
+    "<p>Copyright © 2018 Author Name</p><p>ISBN 978-1946885005</p><p>All rights reserved.</p>",
+]
+
+
+@pytest.fixture
+def front_matter_epub_path(tmp_path):
+    """2 个文档：正文 + 无标记版权页，用于测启发式跳过。"""
+    return make_epub(tmp_path, _FRONT_MATTER_DOCS, "frontmatter.epub")

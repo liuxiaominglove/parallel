@@ -184,6 +184,15 @@ def test_translatable_documents_filters_by_type(typed_epub_path):
     assert len(result) == 7
 
 
+def test_translatable_documents_skips_unmarked_front_matter(front_matter_epub_path):
+    epub = epub_io.Epub(str(front_matter_epub_path))
+    docs = epub.documents()  # [正文, 无标记版权页]
+    result = pipeline.translatable_documents(epub, ())
+    assert docs[1] not in result
+    assert docs[0] in result
+    assert len(result) == 1
+
+
 def test_translatable_documents_empty_skip_keeps_all(typed_epub_path):
     epub = epub_io.Epub(str(typed_epub_path))
     assert len(pipeline.translatable_documents(epub, ())) == len(epub.documents())
@@ -276,6 +285,19 @@ def test_progress_stops_at_max_blocks(epub_path, tmp_path, fake_translator):
     )
     assert reason == "max_blocks"
     assert progress[-1][0] == 3  # done 停在截断处
+
+
+def test_progress_total_reflects_max_blocks(epub_path, tmp_path, fake_translator):
+    config = Config(batch_size=10)
+    epub = epub_io.Epub(str(epub_path))
+    progress = []
+    n, reason = pipeline.translate_all(
+        epub, Checkpoint(str(tmp_path / "ck.json")), fake_translator, config,
+        max_blocks=3, on_progress=lambda d, t, c: progress.append((d, t, c))
+    )
+    assert reason == "max_blocks"
+    # total 反映本次实际翻译块数（max_blocks 截断），而非全量剩余块
+    assert progress[-1] == (3, 3, progress[-1][2])
 
 
 def test_count_translated_empty_checkpoint(epub_path, tmp_path):

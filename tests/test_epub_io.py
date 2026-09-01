@@ -108,3 +108,86 @@ def test_document_types_no_markers_returns_empty(epub_path):
     epub = Epub(str(epub_path))
     href = epub.documents()[0]
     assert epub.document_types(href) == set()
+
+
+def test_container_missing_rootfile_raises(tmp_path):
+    p = tmp_path / "bad.epub"
+    with zipfile.ZipFile(str(p), "w") as z:
+        z.writestr(
+            "META-INF/container.xml",
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"></container>',
+        )
+    with pytest.raises(EpubError):
+        Epub(str(p))
+
+
+def test_container_rootfile_missing_full_path_raises(tmp_path):
+    p = tmp_path / "bad.epub"
+    with zipfile.ZipFile(str(p), "w") as z:
+        z.writestr(
+            "META-INF/container.xml",
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
+            "<rootfiles><rootfile/></rootfiles></container>",
+        )
+    with pytest.raises(EpubError):
+        Epub(str(p))
+
+
+def test_malformed_opf_raises(tmp_path):
+    p = tmp_path / "bad.epub"
+    with zipfile.ZipFile(str(p), "w") as z:
+        z.writestr(
+            "META-INF/container.xml",
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
+            '<rootfiles><rootfile full-path="content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        z.writestr("content.opf", "<package>unclosed")
+    with pytest.raises(EpubError):
+        Epub(str(p))
+
+
+def test_write_in_place_does_not_corrupt(epub_path, tmp_path):
+    import shutil
+
+    target = tmp_path / "inplace.epub"
+    shutil.copyfile(str(epub_path), str(target))
+
+    epub = Epub(str(target))
+    chap1 = epub.documents()[0]
+    soup = epub.document_soup(chap1)
+    p = soup.find("p")
+    cn = soup.new_tag("p")
+    cn["class"] = ["cn-parallel"]
+    cn.string = "你好。"
+    p.insert_after(cn)
+
+    epub.write(str(target), {chap1: serialize_xhtml(soup)})
+
+    # 输出路径 == 输入路径：源文件不能被截断损坏，且译文已写入
+    epub2 = Epub(str(target))
+    assert b"cn-parallel" in epub2.document_bytes(epub2.documents()[0])
+
+
+def test_write_accepts_pathlib_path(epub_path, tmp_path):
+    import shutil
+    from pathlib import Path
+
+    target = tmp_path / "pathobj.epub"
+    shutil.copyfile(str(epub_path), str(target))
+
+    epub = Epub(str(target))
+    chap1 = epub.documents()[0]
+    soup = epub.document_soup(chap1)
+    p = soup.find("p")
+    cn = soup.new_tag("p")
+    cn["class"] = ["cn-parallel"]
+    cn.string = "你好。"
+    p.insert_after(cn)
+
+    out = tmp_path / "out.epub"
+    epub.write(out, {chap1: serialize_xhtml(soup)})  # 传 Path 对象而非 str
+
+    assert out.exists()
+    epub2 = Epub(str(out))
+    assert b"cn-parallel" in epub2.document_bytes(epub2.documents()[0])

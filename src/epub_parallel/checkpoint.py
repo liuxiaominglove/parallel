@@ -23,10 +23,13 @@ class Checkpoint:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
+        except (ValueError, OSError) as e:
             raise CheckpointError(f"checkpoint 损坏: {self.path} ({e})") from e
-        if not isinstance(data, dict) or "documents" not in data:
+        if not isinstance(data, dict) or not isinstance(data.get("documents"), dict):
             raise CheckpointError(f"checkpoint 结构无效: {self.path}")
+        for href, doc in data["documents"].items():
+            if not isinstance(doc, dict) or not isinstance(doc.get("translations"), list):
+                raise CheckpointError(f"checkpoint 结构无效: {self.path} ({href} 的 translations 非列表)")
         self.data = data
 
     def get_translations(self, doc_href):
@@ -40,13 +43,16 @@ class Checkpoint:
 
     def save(self):
         d = os.path.dirname(os.path.abspath(self.path))
-        os.makedirs(d, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=d, prefix=".checkpoint-", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
+            os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".checkpoint-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.path)
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                raise
+        except OSError as e:
+            raise CheckpointError(f"checkpoint 写入失败: {self.path} ({e})") from e

@@ -26,6 +26,10 @@ class TranslateError(Exception):
     """翻译失败（重试耗尽后仍失败）。"""
 
 
+class TranslateRetryableError(TranslateError):
+    """可重试的翻译错误：网络 / 5xx / 429 / 响应解析 / 条数不匹配（模型输出瞬时性）。"""
+
+
 class Translator:
     def __init__(self, api_key, base_url="https://api.deepseek.com", model="deepseek-v4-flash",
                  temperature=0.2, timeout=60.0, max_retries=5, backoff_base=1.0,
@@ -43,6 +47,7 @@ class Translator:
         self._endpoint = self.base_url + "/chat/completions"
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.warnings = []
 
     def translate_batch(self, texts):
         """翻译一批文本，返回同长度的译文列表。
@@ -56,15 +61,39 @@ class Translator:
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                return self._attempt(payload, texts)
-            except TranslateError as e:
+                return self._enforce_translated(texts, self._attempt(payload, texts))
+            except TranslateRetryableError as e:
                 last_error = e
                 if attempt == self.max_retries:
                     break
                 time.sleep(self.backoff_base * (2 ** (attempt - 1)))
         if len(texts) == 1:
             raise TranslateError(f"翻译失败（重试 {self.max_retries} 次后放弃）: {last_error}")
-        return [self._translate_single(t) for t in texts]
+        return self._enforce_translated(texts, [self._translate_single(t) for t in texts])
+
+    def _enforce_translated(self, texts, translations):
+        """松档质检：译文与原文相同的条目重翻单段，重翻仍相同则告警保留；
+        异常短长只告警不拦截。"""
+        result = list(translations)
+        for i, (orig, cn) in enumerate(zip(texts, result)):
+            if not orig:
+                continue
+            if str(cn).strip() == str(orig).strip():
+                try:
+                    retried = self._translate_single(orig)
+                except TranslateError:
+                    self.warnings.append(f"重翻失败（保留原文）: {orig[:60]}")
+                    continue
+                result[i] = retried
+                if str(retried).strip() == str(orig).strip():
+                    self.warnings.append(f"译文与原文相同: {orig[:60]}")
+                continue
+            ratio = len(str(cn)) / max(1, len(orig))
+            if ratio < 0.1 or ratio > 3:
+                self.warnings.append(
+                    f"译文长度异常(比例 {ratio:.2f}): {orig[:40]} → {str(cn)[:40]}"
+                )
+        return result
 
     def _translate_single(self, text):
         """单段翻译（带重试），失败抛 TranslateError。"""
@@ -73,7 +102,7 @@ class Translator:
         for attempt in range(1, self.max_retries + 1):
             try:
                 return self._attempt(payload, [text])[0]
-            except TranslateError as e:
+            except TranslateRetryableError as e:
                 last_error = e
                 if attempt == self.max_retries:
                     break
@@ -113,10 +142,10 @@ class Translator:
                 timeout=self.timeout,
             )
         except requests.RequestException as e:
-            raise TranslateError(f"网络错误: {e}") from e
+            raise TranslateRetryableError(f"网络错误: {e}") from e
 
         if resp.status_code in RETRYABLE_STATUS or resp.status_code >= 500:
-            raise TranslateError(f"HTTP {resp.status_code}")
+            raise TranslateRetryableError(f"HTTP {resp.status_code}")
 
         if resp.status_code != 200:
             raise TranslateError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -126,10 +155,10 @@ class Translator:
             content = data["choices"][0]["message"]["content"]
             translations = self._parse_translations(content)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
-            raise TranslateError(f"响应解析失败: {e}") from e
+            raise TranslateRetryableError(f"响应解析失败: {e}") from e
 
         if not isinstance(translations, list) or len(translations) != len(texts):
-            raise TranslateError(
+            raise TranslateRetryableError(
                 f"译文条数不匹配: 期望 {len(texts)}，得到 {len(translations) if isinstance(translations, list) else '非列表'}"
             )
 

@@ -106,3 +106,35 @@ def test_skip_types_from_cli_override(tmp_path):
     p.write_text(json.dumps({"skip_types": ["index"]}), encoding="utf-8")
     cfg = Config.from_env(config_path=str(p), skip_types=("cover",))
     assert cfg.skip_types == ("cover",)
+
+
+def test_bool_string_false_coerced(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"disable_thinking": "false"}), encoding="utf-8")
+    assert load_config_file(str(p))["disable_thinking"] is False
+
+
+def test_bool_string_off_coerced(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"disable_thinking": "off"}), encoding="utf-8")
+    assert load_config_file(str(p))["disable_thinking"] is False
+
+
+def test_bool_native_false_stays_false(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"disable_thinking": False}), encoding="utf-8")
+    assert load_config_file(str(p))["disable_thinking"] is False
+
+
+def test_load_config_bad_numeric_value_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"batch_size": "abc"}), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config_file(str(p))
+
+
+def test_load_config_bad_tuple_value_raises(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"skip_types": 123}), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config_file(str(p))

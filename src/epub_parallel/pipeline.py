@@ -32,9 +32,16 @@ def count_blocks(epub, skip_types=()):
 
 
 def translatable_documents(epub, skip_types=()):
-    """返回排除 skip_types 语义类型的文档列表（按 spine 顺序）。"""
+    """返回排除 skip_types 语义类型与启发式前置页（无标记版权页/目录页）的文档列表。"""
     skip = set(skip_types)
-    return [href for href in epub.documents() if not (epub.document_types(href) & skip)]
+    result = []
+    for href in epub.documents():
+        if epub.document_types(href) & skip:
+            continue
+        if extract.is_front_matter(epub.document_soup(href)):
+            continue
+        result.append(href)
+    return result
 
 
 def _doc_texts(epub, href):
@@ -80,7 +87,8 @@ def translate_all(epub, checkpoint, translator, config, max_blocks=None, on_prog
     返回 (新增翻译块数, 停止原因)，停止原因为 None / "max_blocks" / "max_cost"。
     on_progress(done, total, cost) 每批完成后回调：done=本次已完成块数，total=本次需翻总块数。
     """
-    total = len(remaining_texts(epub, checkpoint, config.skip_types))
+    remaining = len(remaining_texts(epub, checkpoint, config.skip_types))
+    total = remaining if max_blocks is None else min(remaining, max_blocks)
     budget = max_blocks
     new_count = 0
     for href in translatable_documents(epub, config.skip_types):

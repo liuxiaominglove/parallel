@@ -64,3 +64,43 @@ def test_partial_resume_alignment(tmp_path):
     cp2.set_translations("EPUB/a.xhtml", existing)
     cp2.save()
     assert Checkpoint(str(p)).get_translations("EPUB/a.xhtml") == ["一", "二", "三"]
+
+
+def test_non_utf8_checkpoint_raises(tmp_path):
+    p = tmp_path / "ck.json"
+    p.write_bytes(b"\xff\xfe\x00garbage")
+    with pytest.raises(CheckpointError):
+        Checkpoint(str(p))
+
+
+def test_documents_null_raises(tmp_path):
+    p = tmp_path / "ck.json"
+    p.write_text('{"documents": null}', encoding="utf-8")
+    with pytest.raises(CheckpointError):
+        Checkpoint(str(p))
+
+
+def test_documents_entry_not_dict_raises(tmp_path):
+    p = tmp_path / "ck.json"
+    p.write_text('{"documents": {"a.xhtml": "not-a-dict"}}', encoding="utf-8")
+    with pytest.raises(CheckpointError):
+        Checkpoint(str(p))
+
+
+def test_translations_not_list_raises(tmp_path):
+    p = tmp_path / "ck.json"
+    p.write_text('{"documents": {"a.xhtml": {"translations": "nope"}}}', encoding="utf-8")
+    with pytest.raises(CheckpointError):
+        Checkpoint(str(p))
+
+
+def test_save_io_error_wrapped(monkeypatch, tmp_path):
+    cp = Checkpoint(str(tmp_path / "ck.json"))
+    cp.set_translations("EPUB/a.xhtml", ["一"])
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("epub_parallel.checkpoint.os.replace", boom)
+    with pytest.raises(CheckpointError):
+        cp.save()
